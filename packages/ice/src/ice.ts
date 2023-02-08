@@ -52,6 +52,10 @@ export class Connection {
   readonly stateChanged = new Event<[IceState]>();
 
   private _remoteCandidates: Candidate[] = [];
+  private valid: { [componentId: number]: CandidatePair[] } = {};
+  get validKeys() {
+    return Object.keys(this.valid).map((v) => v.toString());
+  }
   // P2P接続完了したソケット
   private nominated: { [componentId: number]: CandidatePair } = {};
   get nominatedKeys() {
@@ -279,24 +283,127 @@ export class Connection {
       await timers.setTimeout(20);
     }
 
-    // # wait for completion
-    let res: number = ICE_FAILED;
-    while (this.checkList.length > 0 && res === ICE_FAILED) {
-      res = await this.checkListState.get();
-    }
+    // # wait for checks to finish or time out
+    // XXX: Check if 15-second timeout is appropriate
+    const res: number | void = await Promise.race([
+      this.checkListState.get(),
+      timers.setTimeout(15000),
+    ]);
 
-    // # cancel remaining checks
+    // # cancel any remaining checks
     this.checkList.forEach((check) => check.handle?.cancel());
 
-    if (res !== ICE_COMPLETED) {
+    if (res === ICE_FAILED) {
       throw new Error("ICE negotiation failed");
     }
+
+    // # check if we have at least one valid candidate for each component
+    if (
+      this.iceControlling &&
+      (res === ICE_SUCCEEDED || this.validKeys.length === this._components.size)
+    ) {
+      let nominating = true;
+      while (nominating) {
+        if (this.state === "closed") {
+          break;
+        }
+        nominating = await this.doNominations();
+      }
+    }
+
+    // # if we did not nominate one pair for each component, fail here
+    if (this.nominatedKeys.length !== this._components.size) {
+      log(
+        "ICE negotiation failed: do not have one nominated candidate pair per component"
+      );
+      throw new Error(
+        "ICE negotiation failed: do not have one nominated candidate pair per component"
+      );
+    }
+    log("ICE completed");
 
     // # start consent freshness tests
     this.queryConsentHandle = future(this.queryConsent());
 
     this.setState("connected");
   }
+
+  async doNominations() {
+    let doingNominations = false;
+    const nominations: Promise<void>[] = [];
+    // # nominate the highest-priority candidate pair for each component
+    for (const pair of this.checkList) {
+      if (
+        !this.nominating.has(pair.component) &&
+        pair.state === CandidatePairState.SUCCEEDED
+      ) {
+        // # there is at least one nomination left to perform
+        doingNominations = true;
+
+        // # perform regular nomination
+        this.nominating.add(pair.component);
+        nominations.push(this.nominatePair(pair));
+      }
+    }
+
+    // # wait for all nomination requests to resolve
+    await Promise.all(nominations);
+
+    // # if we successfully nominated a pair for each component, signal complete
+    if (this.nominatedKeys.length === this._components.size) {
+      log("ICE completed");
+      this.checkListDone = true;
+      return false;
+    }
+
+    return doingNominations;
+  }
+
+  nominatePair = (pair: CandidatePair) =>
+    new Promise<void>(async (r, f) => {
+      log("nominate start", pair.toJSON());
+      const request = this.buildRequest(pair, true);
+      try {
+        await Promise.race([
+          pair.protocol.request(
+            request,
+            pair.remoteAddr,
+            Buffer.from(this.remotePassword, "utf8")
+          ),
+          new Promise(async (_, reject) => {
+            await timers.setTimeout(5000);
+            reject();
+          }),
+        ]);
+      } catch (error) {
+        log("nominate failed", pair.toJSON());
+        this.setPairState(pair, CandidatePairState.FAILED);
+        this.nominating.delete(pair.component);
+        f();
+        return;
+      }
+      log("nominate succeeded", pair.toJSON());
+      pair.nominated = true;
+      this.nominated[pair.component] = pair;
+      this.nominating.delete(pair.component);
+
+      // 8.1.2.  Updating States
+
+      // The agent MUST remove all Waiting and Frozen pairs in the check
+      // list and triggered check queue for the same component as the
+      // nominated pairs for that media stream.
+      for (const p of this.checkList) {
+        if (
+          p.component === pair.component &&
+          [CandidatePairState.WAITING, CandidatePairState.FROZEN].includes(
+            p.state
+          )
+        ) {
+          this.setPairState(p, CandidatePairState.FAILED);
+        }
+      }
+      r();
+    });
 
   private unfreezeInitial() {
     // # unfreeze first pair for the first component
@@ -686,53 +793,61 @@ export class Connection {
   private checkComplete(pair: CandidatePair) {
     pair.handle = undefined;
     if (pair.state === CandidatePairState.SUCCEEDED) {
-      // Updating the Nominated Flag
+      if (!this.valid[pair.component]) {
+        this.valid[pair.component] = [pair];
+      } else {
+        this.valid[pair.component].push(pair);
+      }
 
-      // https://www.rfc-editor.org/rfc/rfc8445#section-7.3.1.5,
-      // Once the nominated flag is set for a component of a data stream, it
-      // concludes the ICE processing for that component.  See Section 8.
-      // So disallow overwriting of the pair nominated for that component
-      if (pair.nominated && this.nominated[pair.component] == undefined) {
-        log("nominated", pair.toJSON());
-        this.nominated[pair.component] = pair;
-        this.nominating.delete(pair.component);
+      if (!this.iceControlling) {
+        // Updating the Nominated Flag
 
-        // 8.1.2.  Updating States
+        // https://www.rfc-editor.org/rfc/rfc8445#section-7.3.1.5,
+        // Once the nominated flag is set for a component of a data stream, it
+        // concludes the ICE processing for that component.  See Section 8.
+        // So disallow overwriting of the pair nominated for that component
+        if (pair.nominated && this.nominated[pair.component] == undefined) {
+          log("nominated", pair.toJSON());
+          this.nominated[pair.component] = pair;
+          this.nominating.delete(pair.component);
 
-        // The agent MUST remove all Waiting and Frozen pairs in the check
-        // list and triggered check queue for the same component as the
-        // nominated pairs for that media stream.
-        for (const p of this.checkList) {
-          if (
-            p.component === pair.component &&
-            [CandidatePairState.WAITING, CandidatePairState.FROZEN].includes(
-              p.state
-            )
-          ) {
-            this.setPairState(p, CandidatePairState.FAILED);
+          // 8.1.2.  Updating States
+
+          // The agent MUST remove all Waiting and Frozen pairs in the check
+          // list and triggered check queue for the same component as the
+          // nominated pairs for that media stream.
+          for (const p of this.checkList) {
+            if (
+              p.component === pair.component &&
+              [CandidatePairState.WAITING, CandidatePairState.FROZEN].includes(
+                p.state
+              )
+            ) {
+              this.setPairState(p, CandidatePairState.FAILED);
+            }
           }
         }
-      }
 
-      // Once there is at least one nominated pair in the valid list for
-      // every component of at least one media stream and the state of the
-      // check list is Running:
-      if (this.nominatedKeys.length === this._components.size) {
-        if (!this.checkListDone) {
-          log("ICE completed");
-          this.checkListState.put(new Promise((r) => r(ICE_COMPLETED)));
-          this.checkListDone = true;
+        // Once there is at least one nominated pair in the valid list for
+        // every component of at least one media stream and the state of the
+        // check list is Running:
+        if (this.nominatedKeys.length === this._components.size) {
+          if (!this.checkListDone) {
+            log("ICE completed");
+            this.checkListState.put(new Promise((r) => r(ICE_COMPLETED)));
+            this.checkListDone = true;
+          }
+          return;
         }
-        return;
-      }
 
-      // 7.1.3.2.3.  Updating Pair States
-      for (const p of this.checkList) {
-        if (
-          p.localCandidate.foundation === pair.localCandidate.foundation &&
-          p.state === CandidatePairState.FROZEN
-        ) {
-          this.setPairState(p, CandidatePairState.WAITING);
+        // 7.1.3.2.3.  Updating Pair States
+        for (const p of this.checkList) {
+          if (
+            p.localCandidate.foundation === pair.localCandidate.foundation &&
+            p.state === CandidatePairState.FROZEN
+          ) {
+            this.setPairState(p, CandidatePairState.WAITING);
+          }
         }
       }
     }
@@ -742,6 +857,20 @@ export class Connection {
       if (this.checkList.find(({ state }) => !list.includes(state))) {
         return;
       }
+    }
+    // Everything in the check list is either FAILED or SUCCEEDED
+    // If there is a valid pair for each component in the valid list,
+    // set the checklist state to SUCCEEDED.
+    if (
+      this.validKeys.length === this._components.size &&
+      this.iceControlling
+    ) {
+      if (!this.checkListDone) {
+        log("ICE succeeded");
+        this.checkListState.put(new Promise((r) => r(ICE_SUCCEEDED)));
+        this.checkListDone = true;
+      }
+      return;
     }
 
     if (!this.iceControlling) {
@@ -822,22 +951,6 @@ export class Connection {
       // # success
       if (nominate || pair.remoteNominated) {
         // # nominated by agressive nomination or the remote party
-        pair.nominated = true;
-      } else if (this.iceControlling && !this.nominating.has(pair.component)) {
-        // # perform regular nomination
-        this.nominating.add(pair.component);
-        const request = this.buildRequest(pair, true);
-        try {
-          await pair.protocol.request(
-            request,
-            pair.remoteAddr,
-            Buffer.from(this.remotePassword, "utf8")
-          );
-        } catch (error) {
-          this.setPairState(pair, CandidatePairState.FAILED);
-          this.checkComplete(pair);
-          return;
-        }
         pair.nominated = true;
       }
 
@@ -1006,6 +1119,7 @@ export class CandidatePair {
 
 const ICE_COMPLETED = 1 as const;
 const ICE_FAILED = 2 as const;
+const ICE_SUCCEEDED = 3 as const;
 
 const CONSENT_INTERVAL = 5;
 const CONSENT_FAILURES = 6;
@@ -1065,11 +1179,11 @@ export function sortCandidatePairs(
   pairs.sort(
     (a, b) =>
       candidatePairPriority(
-        a.localCandidate,
-        a.remoteCandidate,
+        b.localCandidate,
+        b.remoteCandidate,
         iceControlling
       ) -
-      candidatePairPriority(b.localCandidate, b.remoteCandidate, iceControlling)
+      candidatePairPriority(a.localCandidate, a.remoteCandidate, iceControlling)
   );
 }
 
