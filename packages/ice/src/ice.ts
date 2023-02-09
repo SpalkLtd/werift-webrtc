@@ -268,7 +268,7 @@ export class Connection {
     this.unfreezeInitial();
 
     // # handle early checks
-    this.earlyChecks.forEach((earlyCheck) => this.checkIncoming(...earlyCheck));
+    this.earlyChecks.forEach((earlyCheck) => !(this.options.forceTurn && earlyCheck[2].type !== "turn") && this.checkIncoming(...earlyCheck));
     this.earlyChecks = [];
 
     // # perform checks
@@ -592,6 +592,10 @@ export class Connection {
       this.options.filterStunResponse &&
       !this.options.filterStunResponse(message, addr, protocol)
     ) {
+      return;
+    }
+
+    if (this.options.forceTurn && protocol.type !== "turn") {
       return;
     }
 
@@ -920,6 +924,7 @@ export class Connection {
   private pairRemoteCandidate = (remoteCandidate: Candidate) => {
     for (const protocol of this.protocols) {
       if (
+        !(this.options.forceTurn && protocol.type !== "turn") &&
         protocol.localCandidate?.canPairWith(remoteCandidate) &&
         !this.findPair(protocol, remoteCandidate)
       ) {
