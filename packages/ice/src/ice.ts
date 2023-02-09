@@ -1065,11 +1065,11 @@ export function sortCandidatePairs(
   pairs.sort(
     (a, b) =>
       candidatePairPriority(
-        a.localCandidate,
-        a.remoteCandidate,
+        b.localCandidate,
+        b.remoteCandidate,
         iceControlling
       ) -
-      candidatePairPriority(b.localCandidate, b.remoteCandidate, iceControlling)
+      candidatePairPriority(a.localCandidate, a.remoteCandidate, iceControlling)
   );
 }
 
