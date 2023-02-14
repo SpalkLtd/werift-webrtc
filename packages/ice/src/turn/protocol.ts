@@ -258,23 +258,35 @@ class TurnClient implements Protocol {
 
   async sendData(data: Buffer, addr: Address) {
     const channel = await this.getChannel(addr);
-
-    const header = jspack.Pack("!HH", [channel.number, data.length]);
-    this.transport.send(
-      Buffer.concat([Buffer.from(header), data]),
-      this.server
-    );
+    if (channel !== undefined) {
+      const header = jspack.Pack("!HH", [channel.number, data.length]);
+      this.transport.send(
+        Buffer.concat([Buffer.from(header), data]),
+        this.server
+      );
+    }
   }
 
   private async getChannel(addr: Address) {
     if (this.channelBinding) {
-      await this.channelBinding;
+      try {
+        await this.channelBinding;
+      } catch (err) {
+        log("error in channelBind", err);
+        this.channel = undefined
+      }
+      this.channelBinding = undefined
     }
     if (!this.channel) {
       this.channel = { number: this.channelNumber++, address: addr };
 
       this.channelBinding = this.channelBind(this.channel.number, addr);
-      await this.channelBinding;
+      try {
+        await this.channelBinding;
+      } catch(err) {
+        log("error in channelBind", err);
+        this.channel = undefined
+      }
       this.channelBinding = undefined;
       log("channelBind", this.channel);
     }

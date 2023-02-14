@@ -884,6 +884,13 @@ export class Connection {
       this.remoteCandidates.push(remoteCandidate);
     }
 
+    if (this.options.forceTurn && protocol.type === "stun"){
+      return
+    }
+    if (protocol.type === "turn" && remoteCandidate.type === "host") {
+      return
+    }
+
     // find pair
     let pair = this.findPair(protocol, remoteCandidate);
     if (!pair) {
@@ -921,6 +928,8 @@ export class Connection {
     for (const protocol of this.protocols) {
       if (
         protocol.localCandidate?.canPairWith(remoteCandidate) &&
+        (!this.options.forceTurn || protocol.type === "turn") &&
+        (protocol.type === "stun" || remoteCandidate.type !== "host") &&
         !this.findPair(protocol, remoteCandidate)
       ) {
         const pair = new CandidatePair(protocol, remoteCandidate);
@@ -1065,11 +1074,11 @@ export function sortCandidatePairs(
   pairs.sort(
     (a, b) =>
       candidatePairPriority(
-        a.localCandidate,
-        a.remoteCandidate,
+        b.localCandidate,
+        b.remoteCandidate,
         iceControlling
       ) -
-      candidatePairPriority(b.localCandidate, b.remoteCandidate, iceControlling)
+      candidatePairPriority(a.localCandidate, a.remoteCandidate, iceControlling)
   );
 }
 
