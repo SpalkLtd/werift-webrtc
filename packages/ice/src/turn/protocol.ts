@@ -3,7 +3,7 @@ import debug from "debug";
 import { jspack } from "jspack";
 import PCancelable from "p-cancelable";
 import Event from "rx.mini";
-import { clearTimeout, setTimeout } from "timers";
+import { setTimeout } from "timers/promises";
 
 import { InterfaceAddresses } from "../../../common/src/network";
 import { Candidate } from "../candidate";
@@ -213,19 +213,17 @@ class TurnClient implements Protocol {
   refresh = () =>
     new PCancelable(async (r, f, onCancel) => {
       let run = true;
-      let timeoutHandle: NodeJS.Timeout | undefined;
+      const ac = new AbortController();
       onCancel(() => {
         run = false;
-        if (timeoutHandle !== undefined) {
-          clearTimeout(timeoutHandle);
-        }
+        ac.abort();
         f("cancel");
       });
 
       while (run) {
         // refresh before expire
-        await new Promise<void>((resolve) => {
-          timeoutHandle = setTimeout(resolve, (5 / 6) * this.lifetime * 1000);
+        await setTimeout((5 / 6) * this.lifetime * 1000, null, {
+          signal: ac.signal,
         });
 
         const request = new Message(methods.REFRESH, classes.REQUEST);
