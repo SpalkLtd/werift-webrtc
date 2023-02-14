@@ -224,13 +224,9 @@ class TurnClient implements Protocol {
 
       while (run) {
         // refresh before expire
-        let resolve: (value: void | PromiseLike<void>) => void = () => {};
-        const deferred = new Promise<void>((_r) => {
-          resolve = _r;
+        await new Promise<void>((resolve) => {
+          timeoutHandle = setTimeout(resolve, (5 / 6) * this.lifetime * 1000);
         });
-
-        timeoutHandle = setTimeout(resolve, (5 / 6) * this.lifetime * 1000);
-        await deferred;
 
         const request = new Message(methods.REFRESH, classes.REQUEST);
         request.setAttribute("LIFETIME", this.lifetime);
