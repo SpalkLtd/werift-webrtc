@@ -221,15 +221,23 @@ class TurnClient implements Protocol {
       });
 
       while (run) {
-        // refresh before expire
-        await setTimeout((5 / 6) * this.lifetime * 1000, null, {
-          signal: ac.signal,
-        });
+        try {
+          // refresh before expire
+          await setTimeout((5 / 6) * this.lifetime * 1000, null, {
+            signal: ac.signal,
+          });
 
-        const request = new Message(methods.REFRESH, classes.REQUEST);
-        request.setAttribute("LIFETIME", this.lifetime);
+          const request = new Message(methods.REFRESH, classes.REQUEST);
+          request.setAttribute("LIFETIME", this.lifetime);
 
-        await this.request(request, this.server);
+          await this.request(request, this.server);
+        } catch (err) {
+          // If we have aborted, ignore the thrown error, otherwise, rethrow the error
+          if (ac.signal.aborted === true) {
+            return;
+          }
+          throw err;
+        }
       }
     });
 
