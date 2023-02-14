@@ -282,13 +282,9 @@ class TurnClient implements Protocol {
     request
       .setAttribute("CHANNEL-NUMBER", channelNumber)
       .setAttribute("XOR-PEER-ADDRESS", addr);
-    try {
-      const [response] = await this.request(request, this.server);
-      if (response.messageMethod !== methods.CHANNEL_BIND) {
-        throw new Error();
-      }
-    } catch (err) {
-      throw err
+    const [response] = await this.request(request, this.server);
+    if (response.messageMethod !== methods.CHANNEL_BIND) {
+      throw new Error();
     }
   }
 
