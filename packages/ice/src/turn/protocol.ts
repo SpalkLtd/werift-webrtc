@@ -74,6 +74,18 @@ class TurnTransport implements Protocol {
   async sendStun(message: Message, addr: Address) {
     await this.turn.sendData(message.bytes, addr);
   }
+
+  async close() {
+    if (this.turn.refreshHandle) {
+      this.turn.refreshHandle.cancel();
+    }
+    Object.values(this.turn.transactions).forEach((transaction) => {
+      transaction.cancel();
+    });
+    if (this.turn.transport instanceof UdpTransport) {
+      this.turn.transport.close();
+    }
+  }
 }
 
 class TurnClient implements Protocol {
@@ -201,14 +213,18 @@ class TurnClient implements Protocol {
   refresh = () =>
     new PCancelable(async (r, f, onCancel) => {
       let run = true;
+      const ac = new AbortController();
       onCancel(() => {
         run = false;
+        ac.abort();
         f("cancel");
       });
 
       while (run) {
         // refresh before expire
-        await setTimeout((5 / 6) * this.lifetime * 1000);
+        await setTimeout((5 / 6) * this.lifetime * 1000, null, {
+          signal: ac.signal,
+        });
 
         const request = new Message(methods.REFRESH, classes.REQUEST);
         request.setAttribute("LIFETIME", this.lifetime);
