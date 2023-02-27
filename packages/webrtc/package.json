@@ -1,5 +1,5 @@
 {
-  "name": "@oeed/werift",
+  "name": "@spalk/werift",
   "version": "0.17.19",
   "description": "WebRTC Implementation for TypeScript (Node.js)",
   "keywords": [
