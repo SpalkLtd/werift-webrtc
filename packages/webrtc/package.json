@@ -1,6 +1,6 @@
 {
   "name": "@spalk/werift",
-  "version": "0.17.19",
+  "version": "0.17.20",
   "description": "WebRTC Implementation for TypeScript (Node.js)",
   "keywords": [
     "WebRTC",
